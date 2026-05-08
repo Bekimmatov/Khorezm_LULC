@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=1200">
+
+    <title>Xorazm viloyati yer resurslari dinamikasi</title>
+    <!-- Tailwind CSS (Zamonaviy dizayn uchun) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Plotly.js (Ilmiy grafikalar uchun) -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { font-family: 'Inter', system-ui, sans-serif; background-color: #f8fafc; }
+        .chart-box { background: white; padding: 1.5rem; border-radius: 0.5rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border: 1px solid #e2e8f0; margin-bottom: 2rem; }
+        .chart-container { width: 100%; height: 500px; }
+    </style>
+</head>
+<body class="text-slate-800">
+
+    <!-- Sarlavha Qismi -->
+    <header class="bg-slate-900 text-white p-6 shadow-md mb-8">
+        <div class="container mx-auto">
+            <h1 class="text-3xl font-bold mb-2">Xorazm Viloyati yer resurslari dinamikasi  (Esri Sentinel-2 10m Land Use/Land Cover Time Series)</h1>
+            <p class="text-slate-300 text-lg">Geofazoviy tahlil: 2017 - 2025 yillar (Viloyat miqyosida)</p>
+        </div>
+    </header>
+
+    <!-- Asosiy Tarkib -->
+    <main class="container mx-auto px-4">
+        
+        <div id="loading" class="text-center py-10 text-xl text-blue-600 font-semibold">
+            Ma'lumotlar yuklanmoqda va qayta ishlanmoqda...
+        </div>
+
+        <div id="dashboard" class="hidden">
+            <!-- 1-Grafik: Yillar kesimida dinamika -->
+            <div class="chart-box">
+                <h2 class="text-xl font-bold text-slate-800 mb-2">1. Viloyat bo'yicha yer toifalarining yillik o'zgarish dinamikasi</h2>
+                <p class="text-sm text-slate-500 mb-4">Ushbu grafik Xorazm viloyatining umumiy maydonida turli yer toifalarining 2017-yildan 2025-yilgacha bo'lgan o'zgarish trendini ko'rsatadi (0 ga teng qiymatlar yashirilgan).</p>
+                <div id="chart-trend" class="chart-container"></div>
+            </div>
+
+            <!-- 2-Grafik: Solishtirma (2017 vs 2025) -->
+            <div class="chart-box">
+                <h2 class="text-xl font-bold text-slate-800 mb-2">2. Yer toifalari maydonlarining solishtirma tahlili (2017 va 2025 yillar)</h2>
+                <p class="text-sm text-slate-500 mb-4">Boshlang'ich (2017 - och rang) va oxirgi (2025 - to'q rang) yillardagi aniq maydon (gektar) ko'rsatkichlari. Har bir ustun ustida aniq qiymatlar keltirilgan.</p>
+                <div id="chart-compare" class="chart-container"></div>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        const DATA_URL = "https://raw.githubusercontent.com/Bekimmatov/Khorezm_LULC/refs/heads/main/table/Khorezm_LULC_2017_2025_by_district.json";
+
+        // Class nomlarini inglizchadan o'zbekchaga o'girish lug'ati
+        const classTranslations = {
+            'Bare_Ground': 'Ochiq yerlar',
+            'Bare_Land': 'Ochiq yerlar', // Ehtiyot chorasi
+            'Built_Area': 'Qurilish maydonlari',
+            'Clouds': 'Bulutlar',
+            'Crops': 'Ekin maydonlari',
+            'Flooded_Vegetation': 'Suv bosgan o\'simliklar',
+            'Rangeland': 'Yaylovlar',
+            'Vegetation': 'Yaylovlar', // Ehtiyot chorasi
+            'Snow_Ice': 'Qor va muz',
+            'Trees': 'Daraxtzorlar',
+            'Water': 'Suv havzalari'
+        };
+
+        // Ranglar palitrasi (Trend grafiki uchun)
+        const classColors = {
+            'Ochiq yerlar': '#d97706',
+            'Qurilish maydonlari': '#ef4444',
+            'Bulutlar': '#94a3b8',
+            'Ekin maydonlari': '#10b981',
+            'Suv bosgan o\'simliklar': '#06b6d4',
+            'Yaylovlar': '#84cc16',
+            'Qor va muz': '#e2e8f0',
+            'Daraxtzorlar': '#15803d',
+            'Suv havzalari': '#3b82f6'
+        };
+
+        async function init() {
+            try {
+                const response = await fetch(DATA_URL);
+                const rawData = await response.json();
+                
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('dashboard').classList.remove('hidden');
+
+                processData(rawData);
+            } catch (error) {
+                document.getElementById('loading').innerText = "Ma'lumotni yuklashda xatolik yuz berdi.";
+                console.error(error);
+            }
+        }
+
+        function processData(data) {
+            const regionalData = {}; // Format: { 2017: { 'Ekin maydonlari': 150000, ... }, ... }
+            const yearsSet = new Set();
+            const classesSet = new Set();
+
+            // 1. Tumanlar ma'lumotlarini viloyat (Umumiy hudud) miqyosida yig'ish
+            data.forEach(row => {
+                const year = row.year;
+                // Tarjima qilish yoki asl nomini qoldirish
+                const uzbClass = classTranslations[row.class] || row.class; 
+                const area = parseFloat(row.area_ha) || 0;
+
+                // 0 gektar bo'lsa umuman qo'shmaymiz (talabga ko'ra)
+                if (area <= 0) return;
+
+                yearsSet.add(year);
+                classesSet.add(uzbClass);
+
+                if (!regionalData[year]) regionalData[year] = {};
+                if (!regionalData[year][uzbClass]) regionalData[year][uzbClass] = 0;
+
+                regionalData[year][uzbClass] += area;
+            });
+
+            const years = Array.from(yearsSet).sort();
+            const classes = Array.from(classesSet);
+
+            renderTrendChart(years, classes, regionalData);
+            renderCompareChart(classes, regionalData);
+        }
+
+        // 1-Grafik: Yillar bo'yicha dinamika (Line chart)
+        function renderTrendChart(years, classes, regionalData) {
+            const traces = classes.map(cls => {
+                const yValues = years.map(y => regionalData[y][cls] || null); // null 0 ni yashiradi
+                
+                // Agar ushbu klass hamma yilda 0 (null) bo'lsa, chizmaymiz
+                if (yValues.every(val => val === null)) return null;
+
+                return {
+                    x: years,
+                    y: yValues,
+                    name: cls,
+                    type: 'scatter',
+                    mode: 'lines+markers',
+                    line: { shape: 'spline', width: 3, color: classColors[cls] || '#333' },
+                    marker: { size: 8 }
+                };
+            }).filter(trace => trace !== null); // Bo'sh qatorlarni olib tashlash
+
+            const layout = {
+                hovermode: 'x unified',
+                margin: { t: 20, b: 40, l: 60, r: 20 },
+                yaxis: { title: 'Maydon (gektar)', tickformat: ',.0f' },
+                xaxis: { title: 'Yillar', type: 'category' }
+            };
+
+            Plotly.newPlot('chart-trend', traces, layout, {responsive: true});
+        }
+
+        // 2-Grafik: 2017 va 2025 solishtirma grafigi (Bar chart)
+        function renderCompareChart(classes, regionalData) {
+            const yearStart = 2017;
+            const yearEnd = 2025;
+
+            // X o'qi uchun klasslar ro'yxati (faqat 2017 yoki 2025 da qiymati borlari)
+            const validClasses = classes.filter(cls => 
+                (regionalData[yearStart] && regionalData[yearStart][cls] > 0) || 
+                (regionalData[yearEnd] && regionalData[yearEnd][cls] > 0)
+            );
+
+            // 2017 ma'lumotlari (Och rang)
+            const data2017 = validClasses.map(cls => regionalData[yearStart]?.[cls] || null);
+            // 2025 ma'lumotlari (To'q rang)
+            const data2025 = validClasses.map(cls => regionalData[yearEnd]?.[cls] || null);
+
+            // Matn formatlash (sonlarni probel bilan ajratish, 0 bo'lsa bo'sh qo'yish)
+            const formatText = (val) => val ? Math.round(val).toLocaleString('uz-UZ') + ' ha' : '';
+
+            const trace2017 = {
+                x: validClasses,
+                y: data2017,
+                name: '2017-yil',
+                type: 'bar',
+                marker: { color: '#93c5fd' }, // Och ko'k (Och rang)
+                text: data2017.map(formatText),
+                textposition: 'auto',
+                hoverinfo: 'x+y+name'
+            };
+
+            const trace2025 = {
+                x: validClasses,
+                y: data2025,
+                name: '2025-yil',
+                type: 'bar',
+                marker: { color: '#1e3a8a' }, // To'q ko'k (To'q rang)
+                text: data2025.map(formatText),
+                textposition: 'auto',
+                hoverinfo: 'x+y+name'
+            };
+
+            const layout = {
+                barmode: 'group',
+                margin: { t: 40, b: 100, l: 60, r: 20 }, // Pastki qismini uzun yozuvlar uchun kattalashtirdik
+                yaxis: { title: 'Maydon (gektar)', tickformat: ',.0f' },
+                xaxis: { tickangle: -45 }, // Yozuvlar sig'ishi uchun qiya qildik
+                legend: { x: 0.01, y: 0.99, bgcolor: 'rgba(255,255,255,0.8)' }
+            };
+
+            Plotly.newPlot('chart-compare', [trace2017, trace2025], layout, {responsive: true});
+        }
+
+        // Tizimni ishga tushirish
+        init();
+    </script>
+</body>
+</html>
